@@ -1,0 +1,18 @@
+name: pingdata
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python < 3.13
+  - gdal
+  - numpy
+  - pandas
+  - geopandas
+  - pyproj
+  - scikit-image
+  - matplotlib
+  - rasterio
+  - h5py
+  - pip
+  - pip:
+    - -e .
