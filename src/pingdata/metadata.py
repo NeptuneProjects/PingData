@@ -9,6 +9,17 @@ from typing import BinaryIO, Protocol
 
 import numpy as np
 
+GENERIC_WATER_TYPES = {
+    1: {"water_type": "fresh", "salinity": 1.0},
+    2: {"water_type": "shallow salt", "salinity": 30.0},
+    3: {"water_type": "deep salt", "salinity": 35.0},
+}
+HELIX_WATER_TYPES = {
+    0: {"water_type": "fresh", "salinity": 1.0},
+    1: {"water_type": "deep salt", "salinity": 35.0},
+    2: {"water_type": "shallow salt", "salinity": 30.0},
+}
+
 
 class MetadataType(Enum):
     GENERIC = 100
@@ -108,7 +119,7 @@ class SolixMetadataPointers:
     unknown_14: list[int] = field(default_factory=lambda: [92, 0, 4, -1])
 
 
-class Metadata:
+class Metadata2:
     def __init__(
         self, file: Path, nchunk: int = 0, export_unknown: bool = False
     ) -> None:
@@ -118,6 +129,41 @@ class Metadata:
         self.exportUnknown: bool = export_unknown
         self.head_start_val: int = 3235818273
         self.head_end_val: int = 33
+
+
+@dataclass
+class Metadata:
+    endianness: str
+    water_code: int
+    sonar_name: str
+    unix_time: int
+    utm_e: int
+    utm_n: int
+    filename: str
+    numrecords: int
+    recordlens_ms: int
+    linesize: int
+    SP1: int
+    SP2: int
+    unknown_1: int
+    unknown_2: int
+    unknown_3: int
+    unknown_4: int
+    unknown_5: int
+    unknown_6: int
+    unknown_7: int
+    unknown_8: int
+    unknown_9: int
+    unknown_10: int
+    unknown_11: int
+    unknown_12: int
+    unknown_13: int
+    unknown_14: int
+    water_type: str | None = None
+    salinity: float | None = None
+    sound_speed: float | None = None
+    time_varying_gain: float | None = None
+    pixel_size: float | None = None
 
 
 def read_metadata(file: Path, temp: float = 10.0) -> dict:
@@ -139,7 +185,7 @@ def read_metadata(file: Path, temp: float = 10.0) -> dict:
     pixel_size = compute_pixel_size(sound_speed)
     metadata.update({"pixel_size": pixel_size})
 
-    return metadata
+    return Metadata(**metadata)
 
 
 def read_metadata_generic(file: Path) -> dict:
@@ -163,6 +209,7 @@ def read_with_pointers(file: Path, pointers: MetadataPointers) -> dict:
     with file.open("rb") as f:
         for key, value in asdict(pointers).items():
             if key == "endianness":
+                data[key] = value
                 continue
             f.seek(value[0])
             if value[2] == 4:
@@ -209,35 +256,13 @@ def assign_water_type(file_type: str, water_code: int) -> dict:
 
 
 def water_type_generic(water_code: int) -> dict:
-    if water_code == 1:
-        water_type = "fresh"
-        salinity = 1.0
-    elif water_code == 2:
-        water_type = "shallow salt"
-        salinity = 30.0
-    elif water_code == 3:
-        water_type = "deep salt"
-        salinity = 35.0
-    else:
-        water_type = "unknown"
-        salinity = 0.0
-    return {"water_type": water_type, "salinity": salinity}
+    return GENERIC_WATER_TYPES.get(
+        water_code, {"water_type": "unknown", "salinity": 0.0}
+    )
 
 
 def water_type_helix(water_code: int) -> dict:
-    if water_code == 0:
-        water_type = "fresh"
-        salinity = 1.0
-    if water_code == 1:
-        water_type = "deep salt"
-        salinity = 35.0
-    if water_code == 2:
-        water_type = "shallow salt"
-        salinity = 30.0
-    else:
-        water_type = "unknown"
-        salinity = 0.0
-    return {"water_type": water_type, "salinity": salinity}
+    return HELIX_WATER_TYPES.get(water_code, {"water_type": "unknown", "salinity": 0.0})
 
 
 def water_type_solix(water_code: int) -> dict:
@@ -250,7 +275,7 @@ def compute_pixel_size(
     # Theta at 3 dB in the horizontal:
     theta3db = np.arcsin(sound_speed / (transducer_length * frequency))
     # Pixel size (m):
-    return 2 / (np.pi * theta3db)
+    return float(2 / (np.pi * theta3db))
 
 
 def compute_sound_speed(temp: float, salinity: float) -> float:
@@ -264,4 +289,4 @@ def compute_sound_speed(temp: float, salinity: float) -> float:
 
 
 def compute_time_varying_gain(sound_speed: float) -> float:
-    return ((8.5 * 10**-5) + (3 / 76923) + ((8.5 * 10**-5) / 4)) * sound_speed
+    return ((8.5e-5) + (3 / 76923) + ((8.5e-5) / 4)) * sound_speed
