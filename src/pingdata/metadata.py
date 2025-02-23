@@ -1,9 +1,13 @@
+# -*- coding: utf-8 -*-
+
 from array import array as arr
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 import struct
 from typing import BinaryIO, Protocol
+
+import numpy as np
 
 
 class MetadataType(Enum):
@@ -104,6 +108,55 @@ class SolixMetadataPointers:
     unknown_14: list[int] = field(default_factory=lambda: [92, 0, 4, -1])
 
 
+class Metadata:
+    def __init__(
+        self, file: Path, nchunk: int = 0, export_unknown: bool = False
+    ) -> None:
+        self.humFile: Path = file
+        self.sonFile: str = file.stem
+        self.nchunk: int = nchunk
+        self.exportUnknown: bool = export_unknown
+        self.head_start_val: int = 3235818273
+        self.head_end_val: int = 33
+
+
+def read_metadata(file: Path, temp: float = 10.0) -> dict:
+    file_size_bytes = file.stat().st_size
+    file_type = MetadataType.from_file_length(file_size_bytes)
+    metadata = reader_factory(file_type)(file)
+
+    # Assign salinity based on water_code:
+    water_code = metadata["water_code"]
+    metadata.update(assign_water_type(file_type, water_code))
+
+    # Compute sound speed and time-varying gain:
+    sound_speed = compute_sound_speed(temp, metadata["salinity"])
+    time_varying_gain = compute_time_varying_gain(sound_speed)
+    metadata.update(
+        {"sound_speed": sound_speed, "time_varying_gain": time_varying_gain}
+    )
+    # Compute pixel size:
+    pixel_size = compute_pixel_size(sound_speed)
+    metadata.update({"pixel_size": pixel_size})
+
+    return metadata
+
+
+def read_metadata_generic(file: Path) -> dict:
+    # Implementation for reading generic metadata
+    return read_with_pointers(file, GenericMetadataPointers())
+
+
+def read_metadata_helix(file: Path) -> dict:
+    # Implementation for reading Helix metadata
+    return read_with_pointers(file, HelixMetadataPointers())
+
+
+def read_metadata_solix(file: Path) -> dict:
+    # Implementation for reading Solix metadata
+    return read_with_pointers(file, SolixMetadataPointers())
+
+
 def read_with_pointers(file: Path, pointers: MetadataPointers) -> dict:
     data = {}
     endian = pointers.endianness
@@ -130,41 +183,13 @@ def read_with_pointers(file: Path, pointers: MetadataPointers) -> dict:
     return data
 
 
-def read_metadata(file: Path) -> dict:
-    file_size_bytes = file.stat().st_size
-    file_type = MetadataType.from_file_length(file_size_bytes)
-    metadata = reader_factory(file_type)(file)
-    # Assign salinity based on water_code:
-    water_code = metadata["water_code"]
-    print(water_code)
-    metadata.update(assign_water_type(file_type, water_code))
-
-    return metadata
-
-
-def read_generic_metadata() -> dict:
-    # Implementation for reading generic metadata
-    pass
-
-
-def read_helix_metadata() -> dict:
-    # Implementation for reading Helix metadata
-    pass
-
-
-def read_solix_metadata(file: Path) -> dict:
-    # Implementation for reading Solix metadata
-    metadata = read_with_pointers(file, SolixMetadataPointers())
-    return metadata
-
-
 def reader_factory(file_type: str) -> callable:
     if file_type == MetadataType.GENERIC:
-        return read_generic_metadata
+        return read_metadata_generic
     if file_type == MetadataType.HELIX:
-        return read_helix_metadata
+        return read_metadata_helix
     if file_type == MetadataType.SOLIX:
-        return read_solix_metadata
+        return read_metadata_solix
     raise ValueError(f"Unsupported file type for metadata reading.")
 
 
@@ -217,3 +242,26 @@ def water_type_helix(water_code: int) -> dict:
 
 def water_type_solix(water_code: int) -> dict:
     return water_type_generic(water_code)
+
+
+def compute_pixel_size(
+    sound_speed: float, transducer_length: float = 0.108, frequency: float = 455e3
+) -> float:
+    # Theta at 3 dB in the horizontal:
+    theta3db = np.arcsin(sound_speed / (transducer_length * frequency))
+    # Pixel size (m):
+    return 2 / (np.pi * theta3db)
+
+
+def compute_sound_speed(temp: float, salinity: float) -> float:
+    return (
+        1449.05
+        + 45.7 * temp
+        - 5.21 * temp**2
+        + 0.23 * temp**3
+        + (1.333 - 0.126 * temp + 0.009 * temp**2) * (salinity - 35)
+    )
+
+
+def compute_time_varying_gain(sound_speed: float) -> float:
+    return ((8.5 * 10**-5) + (3 / 76923) + ((8.5 * 10**-5) / 4)) * sound_speed
