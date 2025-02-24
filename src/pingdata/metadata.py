@@ -5,9 +5,11 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 import struct
-from typing import BinaryIO, Protocol
+from typing import Protocol
 
 import numpy as np
+
+from pingdata.fread import fread_data
 
 GENERIC_WATER_TYPES = {
     1: {"water_type": "fresh", "salinity": 1.0},
@@ -119,18 +121,6 @@ class SolixMetadataPointers:
     unknown_14: list[int] = field(default_factory=lambda: [92, 0, 4, -1])
 
 
-class Metadata2:
-    def __init__(
-        self, file: Path, nchunk: int = 0, export_unknown: bool = False
-    ) -> None:
-        self.humFile: Path = file
-        self.sonFile: str = file.stem
-        self.nchunk: int = nchunk
-        self.exportUnknown: bool = export_unknown
-        self.head_start_val: int = 3235818273
-        self.head_end_val: int = 33
-
-
 @dataclass
 class Metadata:
     endianness: str
@@ -214,15 +204,15 @@ def read_with_pointers(file: Path, pointers: MetadataPointers) -> dict:
             f.seek(value[0])
             if value[2] == 4:
                 byte = struct.unpack(
-                    endian, arr("B", _fread_data(f, value[2], "B")).tobytes()
+                    endian, arr("B", fread_data(f, value[2], "B")).tobytes()
                 )[
                     0
                 ]  # Decode byte
             if value[2] < 4:
-                byte = _fread_data(f, value[2], "B")[0]  # Decode byte
+                byte = fread_data(f, value[2], "B")[0]  # Decode byte
             if value[2] > 4:
                 byte = (
-                    arr("B", _fread_data(f, value[2], "B")).tobytes().decode()
+                    arr("B", fread_data(f, value[2], "B")).tobytes().decode()
                 )  # Decode byte
 
             data[key] = byte
@@ -238,12 +228,6 @@ def reader_factory(file_type: str) -> callable:
     if file_type == MetadataType.SOLIX:
         return read_metadata_solix
     raise ValueError(f"Unsupported file type for metadata reading.")
-
-
-def _fread_data(binary_data: BinaryIO, num_bytes: int, byte_type: str):
-    data = arr(byte_type)
-    data.fromfile(binary_data, num_bytes)
-    return list(data)
 
 
 def assign_water_type(file_type: str, water_code: int) -> dict:
