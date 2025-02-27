@@ -150,13 +150,15 @@ class Metadata:
     unknown_13: int
     unknown_14: int
     water_type: str | None = None
+    temperature: float | None = None
     salinity: float | None = None
     sound_speed: float | None = None
     time_varying_gain: float | None = None
     pixel_size: float | None = None
+    file_path: Path | None = None
 
 
-def read_metadata(file: Path, temp: float = 10.0) -> dict:
+def read_metadata(file: Path, temperature: float = 10.0) -> Metadata:
     file_size_bytes = file.stat().st_size
     file_type = MetadataType.from_file_length(file_size_bytes)
     metadata = reader_factory(file_type)(file)
@@ -166,14 +168,17 @@ def read_metadata(file: Path, temp: float = 10.0) -> dict:
     metadata.update(assign_water_type(file_type, water_code))
 
     # Compute sound speed and time-varying gain:
-    sound_speed = compute_sound_speed(temp, metadata["salinity"])
+    sound_speed = compute_sound_speed(temperature, metadata["salinity"])
     time_varying_gain = compute_time_varying_gain(sound_speed)
     metadata.update(
-        {"sound_speed": sound_speed, "time_varying_gain": time_varying_gain}
+        {"temperature": temperature, "sound_speed": sound_speed, "time_varying_gain": time_varying_gain}
     )
     # Compute pixel size:
     pixel_size = compute_pixel_size(sound_speed)
     metadata.update({"pixel_size": pixel_size})
+
+    # Add file metadata filepath:
+    metadata.update({"file_path": file})
 
     return Metadata(**metadata)
 
