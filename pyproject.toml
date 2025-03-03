@@ -3,13 +3,13 @@ requires = ["setuptools >= 61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pingdata"  # Replace with your desired project name
-version = "0.0.1"
+name = "pingdata"
+version = "0.0.2"
 description = "Python package for reading and exporting HumminBird data."
 authors = [
     { name = "William F. Jenkins", email = "wfjenkins@ucsd.edu" }
 ]
-dependencies = []  # Add any dependencies here
+dependencies = ["h5py", "numpy", "pandas", "pip", "pyproj", "scipy"]
 requires-python = "< 3.13"
 
 [tool.setuptools.packages.find]

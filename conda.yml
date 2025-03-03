@@ -4,15 +4,11 @@ channels:
   - defaults
 dependencies:
   - python < 3.13
-  - gdal
+  - h5py
   - numpy
   - pandas
-  - geopandas
-  - pyproj
-  - scikit-image
-  - matplotlib
-  - rasterio
-  - h5py
   - pip
+  - pyproj
+  - scipy
   - pip:
     - -e .
