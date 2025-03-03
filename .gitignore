@@ -212,3 +212,4 @@ cython_debug/
 #.idea/
 
 /dev
+/pingmapper
