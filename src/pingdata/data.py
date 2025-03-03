@@ -10,6 +10,7 @@ from typing import BinaryIO, Generator, Protocol, Sequence
 import numpy as np
 import pandas as pd
 import pyproj
+from scipy.io import savemat
 
 from pingdata import structures
 
@@ -287,6 +288,42 @@ def condition_ping_metadata_dataframe(
     df = compute_along_track_distance(df)
 
     return df
+
+
+def construct_output_dir(input_file: Path, output_dir: Path | None = None) -> Path:
+    """Get the save path for the converted data.
+
+    If `output_dir` is not provided, the output directory will be the same as
+    the input file's directory, and the filename will be the same as the input
+    file's name without the extension.
+
+    Args:
+        input_file: Path to the input file.
+        output_dir: Path to the output directory. Defaults to None.
+
+    Returns:
+        Path to the output directory.
+    """
+    if not output_dir:
+        return input_file.parent / input_file.stem
+    return output_dir / input_file.stem
+
+
+def convert_data(
+    input_file: Path, temperature: float = 10.0, sound_speed: float = 1500.0
+) -> tuple[PingMetadata, dict[dict]]:
+    """Convert sonar data to a specified format.
+
+    Args:
+        input_file: Path to the input file.
+        temperature: Water temperature in Celsius. Defaults to 10.0.
+        sound_speed: Sound speed in m/s. Defaults to 1500.0.
+
+    Returns:
+        Tuple containing the ping metadata and the sonar data.
+    """
+    ping_metadata = read_ping_metadata(input_file, temperature, sound_speed)
+    return ping_metadata, read_sonar_data(ping_metadata)
 
 
 def convert_epsg3395_to_latlon(
@@ -782,6 +819,86 @@ def reader_factory(file_type: str) -> callable:
     if file_type == MetadataType.SOLIX:
         return read_metadata_solix
     raise ValueError(f"Unsupported file type for metadata reading.")
+
+
+def save_data(
+    metadata: PingMetadata, data: dict, output_dir: Path, file_format: str
+) -> None:
+    """Save data from each beam to the specified format.
+
+    Args:
+        metadata: Metadata of the ping data.
+        data: Sonar data to be saved.
+        output_dir: Directory to save the files.
+        file_format: The desired file format.
+    """
+    save_func = save_function_factory(file_format)
+    for beam, (beam_name, beam_data) in zip(metadata.beams, data.items()):
+        beam.metadata.to_csv(output_dir / f"{beam_name}.csv", index=False)
+        save_func(beam_name, beam_data, output_dir)
+
+
+def save_function_factory(file_format: str):
+    """Factory function to save data in different formats.
+
+    Args:
+        file_format: The desired file format.
+
+    Returns:
+        A function that saves data in the specified format.
+
+    Raises:
+        ValueError: If the specified file format is not supported.
+    """
+    if file_format == "hdf5":
+        return save_hdf5
+    if file_format == "mat":
+        return save_mat
+    if file_format == "npy":
+        return save_npy
+    raise ValueError(f"Unsupported file format: {file_format}")
+
+
+def save_hdf5(beam_name: str, beam_data: dict, output_dir: Path) -> None:
+    """Save beam data to a .hdf5 file.
+
+    Args:
+        beam_name: Name of the beam.
+        beam_data: Beam data to be saved.
+        output_dir: Directory to save the file.
+    """
+    import h5py
+
+    with h5py.File(output_dir / f"{beam_name}.hdf5", "w") as f:
+        for key, value in beam_data.items():
+            f.create_dataset(key, data=value)
+
+
+def save_mat(beam_name: str, beam_data: dict, output_dir: Path) -> None:
+    """Save beam data to a .mat file.
+
+    Args:
+        beam_name: Name of the beam.
+        beam_data: Beam data to be saved.
+        output_dir: Directory to save the file.
+    """
+    savemat(
+        output_dir / f"{beam_name}.mat",
+        {
+            "data": beam_data,
+        },
+    )
+
+
+def save_npy(beam_name: str, beam_data: dict, output_dir: Path) -> None:
+    """Save beam data to a .npy file.
+
+    Args:
+        beam_name: Name of the beam.
+        beam_data: Beam data to be saved.
+        output_dir: Directory to save the file.
+    """
+    np.save(output_dir / f"{beam_name}.npy", beam_data)
 
 
 def water_type_generic(water_code: int) -> dict:
