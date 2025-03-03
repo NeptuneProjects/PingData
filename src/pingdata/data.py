@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum, StrEnum
 from pathlib import Path
 import struct
-from typing import BinaryIO, Protocol, Sequence
+from typing import BinaryIO, Generator, Protocol, Sequence
 
 import numpy as np
 import pandas as pd
@@ -15,6 +15,8 @@ from pingdata import structures
 
 
 class BeamType(StrEnum):
+    """Enumeration of beam types."""
+
     B000 = "ds_lowfreq"
     B001 = "ds_highfreq"
     B002 = "ss_port"
@@ -27,8 +29,26 @@ class BeamType(StrEnum):
         return cls.__members__.get(beam, cls.UNKNOWN)
 
 
+class MetadataType(Enum):
+    """Enumeration of metadata types."""
+
+    GENERIC = 100
+    HELIX = 64
+    SOLIX = 96
+
+    @classmethod
+    def from_file_length(cls, length) -> "MetadataType":
+        """Returns the corresponding FileType based on file length."""
+        return cls(length) if length in cls._value2member_map_ else None
+
+
+class MetadataPointers(Protocol): ...
+
+
 @dataclass
 class Beam:
+    """Container for beam file (SON)."""
+
     channel: int
     type: str
     file: Path
@@ -40,22 +60,10 @@ class Beam:
         )
 
 
-class MetadataType(Enum):
-    GENERIC = 100
-    HELIX = 64
-    SOLIX = 96
-
-    @classmethod
-    def from_file_length(cls, length):
-        """Returns the corresponding FileType based on file length."""
-        return cls(length) if length in cls._value2member_map_ else None
-
-
-class MetadataPointers(Protocol): ...
-
-
 @dataclass
 class Metadata:
+    """Container for metadata file (DAT)."""
+
     endianness: str
     water_code: int
     sonar_name: str
@@ -93,11 +101,22 @@ class Metadata:
 
 @dataclass
 class PingMetadata:
+    """Container for ping metadata."""
+
     metadata: Metadata | None = None
     beams: list[pd.DataFrame] | None = None
 
 
 def assign_water_type(file_type: str, water_code: int) -> dict:
+    """Assign water type and salinity based on the file type and water code.
+
+    Args:
+        file_type: Type of the metadata file.
+        water_code: Water code from the metadata.
+
+    Returns:
+        Dictionary containing the water type and salinity.
+    """
     if file_type == MetadataType.GENERIC:
         return water_type_generic(water_code)
     if file_type == MetadataType.HELIX:
@@ -106,14 +125,27 @@ def assign_water_type(file_type: str, water_code: int) -> dict:
         return water_type_solix(water_code)
 
 
-def beam_files(path: Path):
+def beam_files(path: Path) -> Generator[Path, None, None]:
+    """Get beam files from the given path.
+
+    Args:
+        path: Path to the directory containing beam files.
+
+    Returns:
+        Generator object yielding beam files.
+    """
     stem = path.stem
     return (path.parent / stem).rglob("*.SON")
 
 
 def compute_along_track_distance(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Calculate along track distance based on time ellapsed and gps speed.
+    """Calculate along track distance based on time ellapsed and GPS speed.
+
+    Args:
+        df: DataFrame containing time and speed columns.
+
+    Returns:
+        DataFrame with an additional column for track distance.
     """
 
     ts = df["time_s"].to_numpy()
@@ -139,6 +171,16 @@ def compute_along_track_distance(df: pd.DataFrame) -> pd.DataFrame:
 def compute_pixel_size(
     sound_speed: float, transducer_length: float = 0.108, frequency: float = 455e3
 ) -> float:
+    """Compute pixel size using sound speed and geometry.
+
+    Args:
+        sound_speed: Speed of sound in water (m/s).
+        transducer_length: Length of the transducer (m).
+        frequency: Frequency of the sonar (Hz).
+
+    Returns:
+        Pixel size (m).
+    """
     # Theta at 3 dB in the horizontal:
     theta3db = np.arcsin(sound_speed / (transducer_length * frequency))
     # Pixel size (m):
@@ -146,6 +188,15 @@ def compute_pixel_size(
 
 
 def compute_sound_speed(temp: float, salinity: float) -> float:
+    """Compute sound speed in seawater using temperature and salinity.
+
+    Args:
+        temp: Temperature (C).
+        salinity: Salinity (ppt).
+
+    Returns:
+        Sound speed (m/s).
+    """
     return (
         1449.05
         + 45.7 * temp
@@ -156,14 +207,30 @@ def compute_sound_speed(temp: float, salinity: float) -> float:
 
 
 def compute_time_varying_gain(sound_speed: float) -> float:
+    """Compute time-varying gain based on sound speed.
+
+    Args:
+        sound_speed: Speed of sound in water (m/s).
+
+    Returns:
+        Time-varying gain (dB).
+    """
     return ((8.5e-5) + (3 / 76923) + ((8.5e-5) / 4)) * sound_speed
 
 
 def condition_ping_metadata_dataframe(
     df: pd.DataFrame, pixel_size: float, unix_time: int
 ) -> pd.DataFrame:
-    """ """
+    """Condition the ping metadata DataFrame.
 
+    Args:
+        df: DataFrame containing ping metadata.
+        pixel_size: Pixel size (m).
+        unix_time: Unix time of the recording.
+
+    Returns:
+        DataFrame with conditioned metadata.
+    """
     # Calculate range
     df["max_range"] = df["ping_cnt"] * pixel_size
 
@@ -225,15 +292,14 @@ def condition_ping_metadata_dataframe(
 def convert_epsg3395_to_latlon(
     eastings: Sequence, northings: Sequence
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Converts EPSG 3395 (World Mercator) Easting/Northing to Latitude/Longitude (WGS84).
+    """Convert EPSG 3395 (World Mercator) coordinates to latitude and longitude.
 
-    Parameters:
-    - eastings (array-like): Easting values in EPSG 3395.
-    - northings (array-like): Northing values in EPSG 3395.
+    Args:
+        eastings: Easting coordinates.
+        northings: Northing coordinates.
 
     Returns:
-    - (numpy.ndarray, numpy.ndarray): (latitudes, longitudes) in decimal degrees (WGS84).
+        Tuple of latitude and longitude arrays.
     """
     # Define a transformation from EPSG 3395 (World Mercator) to EPSG 4326 (WGS84 Lat/Lon)
     transformer = pyproj.Transformer.from_crs("EPSG:3395", "EPSG:4326", always_xy=True)
@@ -246,13 +312,27 @@ def convert_epsg3395_to_latlon(
 
 def convert_to_df(
     data: list[dict],
-    frame_offset,
-    header_bytes,
-    chunk_id,
+    frame_offset: list[int],
+    header_bytes: list[int],
+    chunk_id: list[int],
     nchunk: int,
     chunk: int,
     metadata: Metadata,
 ) -> pd.DataFrame:
+    """Convert the list of dictionaries to a DataFrame and condition it.
+
+    Args:
+        data: List of dictionaries containing metadata.
+        frame_offset: Frame offset for each record.
+        header_bytes: Header bytes for each record.
+        chunk_id: Chunk ID for each record.
+        nchunk: Number of chunks.
+        chunk: Current chunk number.
+        metadata: Metadata object.
+
+    Returns:
+        DataFrame containing the conditioned metadata.
+    """
 
     df = pd.DataFrame.from_dict(data)
 
@@ -272,8 +352,8 @@ def convert_to_df(
     for col in df.columns:
         if "SP" in col:
             df.drop(col, axis=1, inplace=True)
-        if "unknown" in col:
-            df.drop(col, axis=1, inplace=True)
+        # if "unknown" in col:
+        #     df.drop(col, axis=1, inplace=True)
 
     # Drop head_start
     df.drop("head_start", axis=1, inplace=True)
@@ -288,12 +368,30 @@ def convert_to_df(
 
 
 def fread_data(binary_data: BinaryIO, num_bytes: int, byte_type: str) -> list:
+    """Read data from a binary file.
+
+    Args:
+        binary_data: Binary file object.
+        num_bytes: Number of bytes to read.
+        byte_type: Type of data to read (e.g., 'B', 'H', 'I', etc.).
+
+    Returns:
+        List of data read from the file.
+    """
     data = arr(byte_type)
     data.fromfile(binary_data, num_bytes)
     return list(data)
 
 
 def get_beams(path: Path) -> list[Beam]:
+    """Get a list of beams from the given path.
+
+    Args:
+        path: Path to the directory containing beam files.
+
+    Returns:
+        List of Beam objects.
+    """
     files = beam_files(path)
 
     beams = []
@@ -310,7 +408,14 @@ def get_beams(path: Path) -> list[Beam]:
 
 
 def get_head_structure(header_length: int) -> np.dtypes.VoidDType:
-    """Returns an instance of the appropriate header dataclass."""
+    """Get the structure of the ping header based on its length.
+
+    Args:
+        header_length: Length of the ping header.
+
+    Returns:
+        The structure of the ping header as a numpy dtype.
+    """
     header_structure = structures.PING_HEADER_REGISTRY.get(header_length)
     if not header_structure:
         raise ValueError(f"Unsupported header size: {header_length}")
@@ -318,30 +423,21 @@ def get_head_structure(header_length: int) -> np.dtypes.VoidDType:
 
 
 def get_ping_header_length(f: BinaryIO) -> int:
+    """Determine .SON ping header length based on known Humminbird
+    .SON file structure.
+
+    Humminbird stores sonar records in packets, where the first x bytes
+    of the packet contain metadata (record number, northing, easting, time
+    elapsed, depth, etc.), proceeded by the sonar/ping returns associated
+    with that ping. This function will search the first ping to determine
+    the length of ping header.
+
+    Args:
+        f: Binary file object.
+
+    Returns:
+        int: Length of the ping header in bytes.
     """
-    Determine .SON ping header length based on known Humminbird
-    .SON file structure.  Humminbird stores sonar records in packets, where
-    the first x bytes of the packet contain metadata (record number, northing,
-    easting, time elapsed, depth, etc.), proceeded by the sonar/ping returns
-    associated with that ping.  This function will search the first
-    ping to determine the length of ping header.
-
-    ----------------------------
-    Required Pre-processing step
-    ----------------------------
-    __init__()
-
-    -------
-    Returns
-    -------
-    headBytes, indicating length, in bytes, of ping header.
-
-    --------------------
-    Next Processing Step
-    --------------------
-    _getHeadStruct()
-    """
-
     HEADER_END_LOCATION: int = 33
 
     header_bytes = 0  # Counter to track sonar header length
@@ -378,6 +474,14 @@ def get_ping_header_length(f: BinaryIO) -> int:
 
 
 def read_beams(metadata: Metadata) -> list[Beam]:
+    """Read beams from the given metadata.
+
+    Args:
+        metadata: Metadata object containing file path.
+
+    Returns:
+        List of Beam objects.
+    """
     beams = get_beams(metadata.file_path)
 
     for beam in beams:
@@ -389,6 +493,16 @@ def read_beams(metadata: Metadata) -> list[Beam]:
 def read_metadata(
     file: Path, temperature: float = 10.0, sound_speed: float | None = None
 ) -> Metadata:
+    """Read metadata from the given file.
+
+    Args:
+        file: Path to the metadata file.
+        temperature: Temperature in Celsius.
+        sound_speed: Sound speed in m/s.
+
+    Returns:
+        Metadata object containing the metadata.
+    """
     file_size_bytes = file.stat().st_size
     file_type = MetadataType.from_file_length(file_size_bytes)
     metadata = reader_factory(file_type)(file)
@@ -426,8 +540,16 @@ def read_metadata_all_pings(
     metadata: Metadata,
     nchunk: int = 500,
 ) -> pd.DataFrame:
-    """ """
+    """Read metadata from all pings in the given file.
 
+    Args:
+        file: Path to the metadata file.
+        metadata: Metadata object containing file path.
+        nchunk: Number of chunks to read.
+
+    Returns:
+        DataFrame containing the metadata for all pings.
+    """
     # Get file length
     file_length = file.stat().st_size
 
@@ -474,8 +596,17 @@ def read_metadata_all_pings(
 def read_metadata_single_ping(
     f: BinaryIO, pointer: int, header_length: int, header_structure: np.dtypes.VoidDType
 ) -> tuple[dict, int]:
-    # Get necessary attributes
+    """Read metadata from a single ping.
 
+    Args:
+        f: Binary file object.
+        pointer: Current position in the file.
+        header_length: Length of the ping header.
+        header_structure: Structure of the ping header.
+
+    Returns:
+        Tuple containing the header data and the new pointer position.
+    """
     # Move to offset
     f.seek(pointer)
 
@@ -496,21 +627,51 @@ def read_metadata_single_ping(
 
 
 def read_metadata_generic(file: Path) -> dict:
-    # Implementation for reading generic metadata
+    """Read metadata from a generic file.
+
+    Args:
+        file: Path to the metadata file.
+
+    Returns:
+        Dictionary containing the metadata.
+    """
     return read_metadata_with_pointers(file, structures.GenericMetadataPointers())
 
 
 def read_metadata_helix(file: Path) -> dict:
-    # Implementation for reading Helix metadata
+    """Read metadata from a Helix file.
+
+    Args:
+        file: Path to the metadata file.
+
+    Returns:
+        Dictionary containing the metadata.
+    """
     return read_metadata_with_pointers(file, structures.HelixMetadataPointers())
 
 
 def read_metadata_solix(file: Path) -> dict:
-    # Implementation for reading Solix metadata
+    """Read metadata from a Solix file.
+
+    Args:
+        file: Path to the metadata file.
+
+    Returns:
+        Dictionary containing the metadata.
+    """
     return read_metadata_with_pointers(file, structures.SolixMetadataPointers())
 
 
 def read_metadata_with_pointers(file: Path, pointers: MetadataPointers) -> dict:
+    """Read metadata from a file using the given pointers.
+
+    Args:
+        file: Path to the metadata file.
+        pointers: MetadataPointers object containing the pointers.
+
+    Returns:
+        Dictionary containing the metadata.
+    """
     data = {}
     endian = pointers.endianness
     with file.open("rb") as f:
@@ -540,12 +701,30 @@ def read_metadata_with_pointers(file: Path, pointers: MetadataPointers) -> dict:
 def read_ping_metadata(
     file: Path, temperature: float, sound_speed: float | None = None
 ) -> PingMetadata:
+    """Read ping metadata from the given file.
+
+    Args:
+        file: Path to the metadata file.
+        temperature: Temperature in Celsius.
+        sound_speed: Sound speed in m/s.
+
+    Returns:
+        PingMetadata object containing the metadata and beams.
+    """
     metadata = read_metadata(file, temperature=temperature)
     beams = read_beams(metadata)
     return PingMetadata(metadata=metadata, beams=beams)
 
 
 def read_sonar_beam(beam: Beam) -> np.ndarray:
+    """Read sonar data from the given beam.
+
+    Args:
+        beam: Beam object containing the file path.
+
+    Returns:
+        Numpy array containing the sonar data.
+    """
     columns_to_keep = ["ping_cnt", "index", "son_offset"]
     metadata = beam.metadata[columns_to_keep]
 
@@ -567,6 +746,14 @@ def read_sonar_beam(beam: Beam) -> np.ndarray:
 
 
 def read_sonar_data(metadata: PingMetadata) -> dict[dict]:
+    """Read sonar data from the given metadata.
+
+    Args:
+        metadata: PingMetadata object containing the metadata and beams.
+
+    Returns:
+        Dictionary containing the sonar data for each beam.
+    """
     data = {}
     for beam in metadata.beams:
         beam_data = read_sonar_beam(beam)
@@ -580,6 +767,14 @@ def read_sonar_data(metadata: PingMetadata) -> dict[dict]:
 
 
 def reader_factory(file_type: str) -> callable:
+    """Factory function to get the appropriate metadata reader based on file type.
+
+    Args:
+        file_type: Type of the metadata file.
+
+    Returns:
+        Function to read metadata for the specified file type.
+    """
     if file_type == MetadataType.GENERIC:
         return read_metadata_generic
     if file_type == MetadataType.HELIX:
@@ -590,16 +785,40 @@ def reader_factory(file_type: str) -> callable:
 
 
 def water_type_generic(water_code: int) -> dict:
+    """Get the water type and salinity based on the water code.
+
+    Args:
+        water_code: Water code from the metadata.
+
+    Returns:
+        Dictionary containing the water type and salinity.
+    """
     return structures.GENERIC_WATER_TYPES.get(
         water_code, {"water_type": "unknown", "salinity": 0.0}
     )
 
 
 def water_type_helix(water_code: int) -> dict:
+    """Get the water type and salinity based on the water code.
+
+    Args:
+        water_code: Water code from the metadata.
+
+    Returns:
+        Dictionary containing the water type and salinity.
+    """
     return structures.HELIX_WATER_TYPES.get(
         water_code, {"water_type": "unknown", "salinity": 0.0}
     )
 
 
 def water_type_solix(water_code: int) -> dict:
+    """Get the water type and salinity based on the water code.
+
+    Args:
+        water_code: Water code from the metadata.
+
+    Returns:
+        Dictionary containing the water type and salinity.
+    """
     return water_type_generic(water_code)
