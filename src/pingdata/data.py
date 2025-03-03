@@ -566,7 +566,7 @@ def read_sonar_beam(beam: Beam) -> np.ndarray:
     return data
 
 
-def read_sonar_data(metadata: PingMetadata) -> list[np.ndarray]:
+def read_sonar_data(metadata: PingMetadata) -> dict[dict]:
     data = {}
     for beam in metadata.beams:
         beam_data = read_sonar_beam(beam)
