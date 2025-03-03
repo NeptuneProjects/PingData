@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pingdata"
-version = "0.0.2"
+version = "0.0.3"
 description = "Python package for reading and exporting HumminBird data."
 authors = [
     { name = "William F. Jenkins", email = "wfjenkins@ucsd.edu" }
