@@ -4,17 +4,17 @@ from dataclasses import dataclass
 import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import BinaryIO, Protocol, Sequence
+from typing import BinaryIO, Sequence
 
 import numpy as np
 import pandas as pd
 import pyproj
 
-from pingdata.metadata import Metadata, read_metadata
+from pingdata.metadata import Metadata, read_metadata, compute_sound_speed
 from pingdata.fread import fread_data
 
 
-HEADER_STRUCTURE_67 = np.dtype(
+PING_HEADER_STRUCTURE_67 = np.dtype(
     [
         ("head_start", ">u4"),
         ("SP128", ">u1"),
@@ -38,7 +38,7 @@ HEADER_STRUCTURE_67 = np.dtype(
         ("SP81", ">u1"),
         ("volt_scale", ">u1"),
         ("SP146", ">u1"),
-        ("f", ">u4"),
+        ("f_kHz", ">u4"),
         ("SP83", ">u1"),
         ("unknown_83", ">u1"),
         ("SP84", ">u1"),
@@ -55,7 +55,7 @@ HEADER_STRUCTURE_67 = np.dtype(
     ]
 )
 
-HEADER_STRUCTURE_72 = np.dtype(
+PING_HEADER_STRUCTURE_72 = np.dtype(
     [
         ("head_start", ">u4"),
         ("SP128", ">u1"),
@@ -81,7 +81,7 @@ HEADER_STRUCTURE_72 = np.dtype(
         ("SP81", ">u1"),
         ("volt_scale", ">u1"),
         ("SP146", ">u1"),
-        ("f", ">u4"),
+        ("f_kHz", ">u4"),
         ("SP83", ">u1"),
         ("unknown_83", ">u1"),
         ("SP84", ">u1"),
@@ -98,7 +98,7 @@ HEADER_STRUCTURE_72 = np.dtype(
     ]
 )
 
-HEADER_STRUCTURE_152 = np.dtype(
+PING_HEADER_STRUCTURE_152 = np.dtype(
     [
         ("head_start", ">u4"),
         ("SP128", ">u1"),
@@ -140,7 +140,7 @@ HEADER_STRUCTURE_152 = np.dtype(
         ("SP81", ">u1"),
         ("volt_scale", ">u1"),
         ("SP146", ">u1"),
-        ("f", ">u4"),
+        ("f_kHz", ">u4"),
         ("SP83", ">u1"),
         ("unknown_83", ">u1"),
         ("SP84", ">u1"),
@@ -173,10 +173,10 @@ HEADER_STRUCTURE_152 = np.dtype(
     ]
 )
 
-SONAR_HEADER_REGISTRY: dict[int, np.dtypes.VoidDType] = {
-    67: HEADER_STRUCTURE_67,
-    72: HEADER_STRUCTURE_72,
-    152: HEADER_STRUCTURE_152,
+PING_HEADER_REGISTRY: dict[int, np.dtypes.VoidDType] = {
+    67: PING_HEADER_STRUCTURE_67,
+    72: PING_HEADER_STRUCTURE_72,
+    152: PING_HEADER_STRUCTURE_152,
 }
 
 
@@ -194,10 +194,6 @@ class BeamType(StrEnum):
 
 
 @dataclass
-class Header(Protocol): ...
-
-
-@dataclass
 class Beam:
     channel: int
     type: str
@@ -210,37 +206,30 @@ class Beam:
         )
 
 
-class SonarData:
-    def __init__(self): ...
-
-
 @dataclass
-class Data:
+class PingMetadata:
     metadata: Metadata | None = None
-    beam_data: list[pd.DataFrame] | None = None
+    beams: list[pd.DataFrame] | None = None
 
 
-def read_data(file: Path, metadata_to_csv: bool) -> Data:
-    metadata = read_metadata(file)
-    beam_data = read_sonar_data(metadata, metadata_to_csv)
-    data = Data(metadata=metadata, beam_data=beam_data)
-    return data
+def read_ping_metadata(
+    file: Path, temperature: float, sound_speed: float | None = None
+) -> PingMetadata:
+    metadata = read_metadata(file, temperature=temperature)
+    beams = read_beams(metadata)
+    return PingMetadata(metadata=metadata, beams=beams)
 
 
-def read_sonar_data(metadata: Metadata, metadata_to_csv: bool = False) -> np.ndarray:
+def read_beams(metadata: Metadata) -> list[Beam]:
     beams = get_beams(metadata.file_path)
 
     for beam in beams:
-        df = read_all_pings(beam.file, metadata)
-        if metadata_to_csv:
-            beam.output_file.parent.mkdir(parents=True, exist_ok=True)
-            df.to_csv(beam.output_file, index=False)
-        beam.metadata = df
+        beam.metadata = read_metadata_all_pings(beam.file, metadata)
 
     return beams
 
 
-def read_all_pings(
+def read_metadata_all_pings(
     file: Path,
     metadata: Metadata,
     nchunk: int = 500,
@@ -267,7 +256,7 @@ def read_all_pings(
         # Decode ping header
         while pointer < file_length:
             # Get header data at offset i
-            header_data, new_pointer = read_single_ping(
+            header_data, new_pointer = read_metadata_single_ping(
                 f, pointer, header_length, header_structure
             )
 
@@ -312,9 +301,7 @@ def convert_to_df(
     df["chunk_id"] = chunk_id
 
     # Do unit conversions
-    df = _doUnitConversion(
-        df, metadata.pixel_size, metadata.temperature, metadata.unix_time
-    )
+    df = condition_ping_metadata_dataframe(df, metadata.pixel_size, metadata.unix_time)
 
     # Drop spacer and unknown columns
     for col in df.columns:
@@ -338,7 +325,7 @@ def convert_to_df(
     return df
 
 
-def read_single_ping(
+def read_metadata_single_ping(
     f: BinaryIO, pointer: int, header_length: int, header_structure: np.dtypes.VoidDType
 ) -> tuple[dict, int]:
     # Get necessary attributes
@@ -364,7 +351,7 @@ def read_single_ping(
 
 def get_head_structure(header_length: int) -> np.dtypes.VoidDType:
     """Returns an instance of the appropriate header dataclass."""
-    header_structure = SONAR_HEADER_REGISTRY.get(header_length)
+    header_structure = PING_HEADER_REGISTRY.get(header_length)
     if not header_structure:
         raise ValueError(f"Unsupported header size: {header_length}")
     return header_structure
@@ -430,13 +417,16 @@ def get_ping_header_length(f: BinaryIO) -> int:
     return header_bytes
 
 
-def _doUnitConversion(
-    df: pd.DataFrame, pixel_size: float, temperature: float, unix_time: int
+def condition_ping_metadata_dataframe(
+    df: pd.DataFrame, pixel_size: float, unix_time: int
 ) -> pd.DataFrame:
     """ """
 
     # Calculate range
     df["max_range"] = df["ping_cnt"] * pixel_size
+
+    # Convert frequency (Hz) to kHz
+    df["f_kHz"] = df["f_kHz"] / 1000
 
     # Easting and northing variances appear to be stored in the file
     ## They are reported in cm's so need to convert
@@ -454,15 +444,6 @@ def _doUnitConversion(
     df["lon"] = lon
     df["lat"] = lat
 
-    # Reproject latitude/longitude to UTM zone
-    e, n = convert_latlon_to_localutm(
-        latitudes=lat,
-        longitudes=lon,
-        utm_zone=infer_utm_zone(lon.mean()),
-    )
-    df["e"] = e
-    df["n"] = n
-
     # Instrument heading, speed, and depth need to be divided by 10 to be
     # in appropriate units.
     df["instr_heading"] = df["instr_heading"] / 10
@@ -470,9 +451,8 @@ def _doUnitConversion(
     df["inst_dep_m"] = df["inst_dep_m"] / 10
 
     # Get units into appropriate format
-    df["f"] = df["f"] / 1000  # Hertz to Kilohertz
     df["time_s"] = df["time_s"] / 1000  # milliseconds to seconds
-    df["tempC"] = temperature * 10
+    # df["tempC"] = temperature
     # # Can we figure out a way to base transducer length on where we think the recording came from?
     # df['t'] = 0.108
     # Use recording unix time to calculate each sonar records unix time
@@ -484,46 +464,23 @@ def _doUnitConversion(
     except:
         df["caltime"] = 0
 
-    # Update caltime to timestamp
-    sonTime = []
-    sonDate = []
-    needToFilt = False
-    for t in df["caltime"].to_numpy():
-        try:
-            t = datetime.datetime.fromtimestamp(t)
-            sonDate.append(datetime.datetime.date(t))
-            sonTime.append(datetime.datetime.time(t))
-        except:
-            sonDate.append(-1)
-            sonTime.append(-1)
-            needToFilt = True
+    df["timestamp_utc"] = pd.to_datetime(df["caltime"], unit="s").astype(str)
 
     df = df.drop("caltime", axis=1)
-    df["date"] = sonDate
-    df["time"] = sonTime
 
-    if needToFilt:
-        df = df[df["date"] != -1]
-        df = df[df["time"] != -1]
-
-        df = df.dropna()
-
-    df = df[df["e"] != np.inf]
+    # df = df[df["e"] != np.inf]
     df = df[df["record_num"] >= 0]
 
     lastIdx = df["index"].iloc[-1]
     df = df[df["index"] <= lastIdx]
 
     # Calculate along-track distance from 'time's and 'speed_ms'. Approximate distance estimate
-    df = _calcTrkDistTS(df)
-
-    # Add transect number (for aoi processing)
-    df["transect"] = 0
+    df = compute_along_track_distance(df)
 
     return df
 
 
-def _calcTrkDistTS(df: pd.DataFrame) -> pd.DataFrame:
+def compute_along_track_distance(df: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate along track distance based on time ellapsed and gps speed.
     """
@@ -591,37 +548,37 @@ def convert_epsg3395_to_latlon(
     return np.array(latitudes), np.array(longitudes)
 
 
-def infer_utm_zone(longitude: float) -> int:
-    """
-    Infers the UTM zone from a given longitude.
+# def infer_utm_zone(longitude: float) -> int:
+#     """
+#     Infers the UTM zone from a given longitude.
 
-    Parameters:
-    - longitude (float): Longitude in decimal degrees.
+#     Parameters:
+#     - longitude (float): Longitude in decimal degrees.
 
-    Returns:
-    - int: UTM zone number.
-    """
-    return int((longitude + 180) / 6) + 1
+#     Returns:
+#     - int: UTM zone number.
+#     """
+#     return int((longitude + 180) / 6) + 1
 
 
-def convert_latlon_to_localutm(
-    latitudes: Sequence, longitudes: Sequence, utm_zone: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Converts latitude and longitude to local UTM coordinates.
+# def convert_latlon_to_localutm(
+#     latitudes: Sequence, longitudes: Sequence, utm_zone: int
+# ) -> tuple[np.ndarray, np.ndarray]:
+#     """
+#     Converts latitude and longitude to local UTM coordinates.
 
-    Parameters:
-    - latitudes (array-like): Latitude values in decimal degrees.
-    - longitudes (array-like): Longitude values in decimal degrees.
-    - utm_zone (int): UTM zone number.
+#     Parameters:
+#     - latitudes (array-like): Latitude values in decimal degrees.
+#     - longitudes (array-like): Longitude values in decimal degrees.
+#     - utm_zone (int): UTM zone number.
 
-    Returns:
-    - (numpy.ndarray, numpy.ndarray): (easting, northing) in meters.
-    """
-    # Define the UTM projection for the specified zone
-    proj = pyproj.Proj(proj="utm", zone=utm_zone, ellps="WGS84", preserve_units=True)
+#     Returns:
+#     - (numpy.ndarray, numpy.ndarray): (easting, northing) in meters.
+#     """
+#     # Define the UTM projection for the specified zone
+#     proj = pyproj.Proj(proj="utm", zone=utm_zone, ellps="WGS84", preserve_units=True)
 
-    # Perform the transformation
-    easting, northing = proj(longitudes, latitudes)
+#     # Perform the transformation
+#     easting, northing = proj(longitudes, latitudes)
 
-    return np.array(easting), np.array(northing)
+#     return np.array(easting), np.array(northing)
