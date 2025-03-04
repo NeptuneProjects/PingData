@@ -389,8 +389,8 @@ def convert_to_df(
     for col in df.columns:
         if "SP" in col:
             df.drop(col, axis=1, inplace=True)
-        # if "unknown" in col:
-        #     df.drop(col, axis=1, inplace=True)
+        if "unknown" in col:
+            df.drop(col, axis=1, inplace=True)
 
     # Drop head_start
     df.drop("head_start", axis=1, inplace=True)
